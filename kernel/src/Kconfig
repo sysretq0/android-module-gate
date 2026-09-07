@@ -1,0 +1,18 @@
+config MODULE_GATE
+	bool "ModuleGate: audit and gate kernel module loads"
+	default y
+	depends on SECURITY && CRYPTO_SHA256
+	help
+	  Tiny LSM hooking kernel_post_load_data() for LOADING_MODULE --
+	  the single choke point every insmod/modprobe/init/autoload path
+	  converges on (finit_module). Decisions are made on the SHA256 of
+	  the actual module bytes, never on spoofable names.
+
+	  Modes via /sys/kernel/module_gate/mode (default 0):
+	    0 audit   - unknown hashes auto-enroll (TOFU), allowed, logged.
+	    1 enforce - unknown hashes denied with -EPERM, logged, counted.
+	  Boot phase (before SYSTEM_RUNNING) never enforces, so a wrong
+	  list cannot brick boot; audit still records every load.
+
+	  Fires once per module load (dozens at boot, ~zero after): no hot
+	  path, no timers, no polling. List capped at 256 entries.
