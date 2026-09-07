@@ -42,7 +42,6 @@
 #include <linux/cred.h>
 #include <linux/uidgid.h>
 #include <linux/kdev_t.h>
-#include <linux/mm.h>
 
 #define MG_HASH_LEN	32
 #define MG_HEX_LEN	(MG_HASH_LEN * 2)
@@ -171,8 +170,9 @@ static int mg_post_load_data(char *buf, loff_t size,
 		return 0;
 	/* Decide under lock, log after unlock: the dcache walk and page
 	 * allocation in mg_log() touch nothing the lock protects. */
+	/* The hash-failure path needs no lock (atomic + READ_ONCE only);
+	 * the list path below does. */
 	have_hash = !mg_hash(buf, size, hash);
-	mutex_lock(&mg_lock);
 	if (!have_hash) {
 		/* Hashing failed (allocation pressure): fail closed under
 		 * enforce mode once userspace runs -- an allocation failure
@@ -183,17 +183,23 @@ static int mg_post_load_data(char *buf, loff_t size,
 			rc = -EPERM;
 		}
 	} else {
+		int erc;
+
+		mutex_lock(&mg_lock);
 		known = mg_known(hash);
 		if (!known && (READ_ONCE(mg_mode) == 0 || system_state < SYSTEM_RUNNING)) {
-			if (!mg_enroll_locked(hash))
-				what = "enrolled";
+			erc = mg_enroll_locked(hash);
+			/* A dropped enrollment must be loud: the header's
+			 * completeness claim depends on every load being
+			 * recorded. The module still loads (rc stays 0). */
+			what = erc ? "enroll-failed" : "enrolled";
 		} else if (!known) {
 			atomic_inc(&mg_denied);
 			what = "denied";
 			rc = -EPERM;
 		}
+		mutex_unlock(&mg_lock);
 	}
-	mutex_unlock(&mg_lock);
 	if (what)
 		mg_log(have_hash ? hash : NULL, what, description);
 	return rc;
