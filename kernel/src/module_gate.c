@@ -116,7 +116,8 @@ static int mg_enroll_locked(const u8 hash[MG_HASH_LEN])
 	return 0;
 }
 
-static void mg_log(const u8 hash[MG_HASH_LEN], const char *what)
+static void mg_log(const u8 hash[MG_HASH_LEN], const char *what,
+		     const char *claimed)
 {
 	/* Who loaded it: exe path + comm/pid/uid, all kernel-owned. The
 	 * module filename is spoofable and ELF-parsing it here would be new
@@ -131,11 +132,15 @@ static void mg_log(const u8 hash[MG_HASH_LEN], const char *what)
 		exe = get_mm_exe_file(current->mm);
 		if (exe && page)
 			path = d_path(&exe->f_path, page, PAGE_SIZE);
-		pr_info("module-gate: %s module sha256:%*phN exe=%s comm=%s pid=%d uid=%u\n",
-			what, MG_HASH_LEN, hash,
+		/* init_user_ns, not current_user_ns: the log is global, so the
+		 * uid must be host-meaningful even if the caller sits in a
+		 * userns. `claimed` is the hook's description string, printed
+		 * verbatim and untrusted (grep aid, not identity). */
+		pr_info("module-gate: %s module sha256:%*phN claimed=%s exe=%s comm=%s pid=%d uid=%u\n",
+			what, MG_HASH_LEN, hash, claimed ? claimed : "?",
 			IS_ERR_OR_NULL(path) ? "?" : path,
 			current->comm, task_pid_nr(current),
-			from_kuid_munged(current_user_ns(), current_uid()));
+			from_kuid(&init_user_ns, current_uid()));
 		if (exe)
 			fput(exe);
 		if (page)
@@ -170,10 +175,10 @@ static int mg_post_load_data(char *buf, loff_t size,
 	known = mg_known(hash);
 	if (!known && (READ_ONCE(mg_mode) == 0 || system_state < SYSTEM_RUNNING)) {
 		if (!mg_enroll_locked(hash))
-			mg_log(hash, "enrolled");
+			mg_log(hash, "enrolled", description);
 	} else if (!known) {
 		atomic_inc(&mg_denied);
-		mg_log(hash, "denied");
+		mg_log(hash, "denied", description);
 		rc = -EPERM;
 	}
 	mutex_unlock(&mg_lock);
