@@ -34,6 +34,9 @@
 #include <crypto/hash.h>
 #include <linux/scatterlist.h>
 #include <linux/atomic.h>
+#include <linux/sched.h>
+#include <linux/cred.h>
+#include <linux/uidgid.h>
 #include <linux/kdev_t.h>
 #include <linux/mm.h>
 
@@ -111,7 +114,12 @@ static int mg_enroll_locked(const u8 hash[MG_HASH_LEN])
 
 static void mg_log(const u8 hash[MG_HASH_LEN], const char *what)
 {
-	pr_info("module-gate: %s module sha256:%*phN\n", what, MG_HASH_LEN, hash);
+	/* Who loaded it (comm/pid/uid) matters more than a name for broken
+	 * modules: the filename is spoofable and ELF-parsing it here would
+	 * be new attack surface in the LSM. current->comm is kernel-owned. */
+	pr_info("module-gate: %s module sha256:%*phN comm=%s pid=%d uid=%u\n",
+		what, MG_HASH_LEN, hash, current->comm, task_pid_nr(current),
+		from_kuid_munged(current_user_ns(), current_uid()));
 }
 
 static int mg_post_load_data(char *buf, loff_t size,
