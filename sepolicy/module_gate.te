@@ -11,7 +11,7 @@
 #     "allow init sysfs_module_gate:dir search" \
 #     "allow init sysfs_module_gate:file rw_file_perms" \
 #     "allow shell sysfs_module_gate:dir search" \
-#     "allow shell sysfs_module_gate:file rw_file_perms" \
+#     "allow shell sysfs_module_gate:file r_file_perms" \
 #     "allow su sysfs_module_gate:dir search" \
 #     "allow su sysfs_module_gate:file rw_file_perms" \
 #     "genfscon sysfs /kernel/module_gate gen_context(system_u:object_r:sysfs_module_gate,s0)"
@@ -24,10 +24,11 @@
 type sysfs_module_gate, fs_type, sysfs_type;
 allow init sysfs_module_gate:dir search;
 allow init sysfs_module_gate:file rw_file_perms;
-# shell gets rw: the CoreShift daemon runs as u:r:shell:s0 and is what
-# arms enforce mode and curates the list at runtime.
+# shell is read-only by design: only init writes (mode/add/remove via
+# init.rc + load-list.sh). The daemon monitors enrolled/denied; it never
+# arms or curates, so it gets no write path to attack.
 allow shell sysfs_module_gate:dir search;
-allow shell sysfs_module_gate:file rw_file_perms;
+allow shell sysfs_module_gate:file r_file_perms;
 allow su sysfs_module_gate:dir search;
 allow su sysfs_module_gate:file rw_file_perms;
 genfscon sysfs /kernel/module_gate gen_context(system_u:object_r:sysfs_module_gate,s0)

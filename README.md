@@ -43,9 +43,9 @@ Closes the LKM door: even with root, `insmod evil.ko` dies unless allowlisted. D
 
 `/sys/kernel/module_gate/` is unlabeled sysfs by default: confined
 domains get DAC-permitted but SELinux-denied. `sepolicy/module_gate.te`
-holds the snippet (init rw only if driven from init.rc; shell rw
-because the CoreShift daemon runs as `u:r:shell:s0`; never
-`untrusted_app`). Apply via
+holds the snippet: init alone writes (mode/add/remove via init.rc +
+load-list.sh); shell reads (monitoring only, no write path by design);
+never `untrusted_app`). Apply via
 `magiskpolicy --live` or a companion module's `sepolicy.rule`.
 
 ## Integrate
