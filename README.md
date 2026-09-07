@@ -11,7 +11,16 @@ Tiny LSM: audit + gate kernel module loads. Every `insmod`/`modprobe`/init/autol
   factory resets and needs no app, no manager, no root session:
   `on post-fs-data` (strict) or `on property:sys.boot_completed=1`
   (relaxed), plus the sepolicy allow for init below. Until that write
-  lands, the device is in audit: observing, enrolling, allowing
+  lands, the device is in audit: observing, enrolling, allowing.
+
+## Persistence (RAM-only state)
+
+List + mode reset every boot. TOFU re-enrolls vendor modules silently,
+but manual adds evaporate -- so persist them ROM-side: keep a hash file
+(one hex per line) on persistent storage and restore it with
+`tools/load-list.sh` from the same init.rc trigger, *before* the mode
+write (adds first, enforce last). The kernel stays stateless by design;
+durability is the ROM's job.
 - One hook, once per load — no hot path, no timers, no polling
 
 Inspired by [Baseband Guard](https://github.com/showdo/BBG) (see Partition Guard for the full story); sibling of [Partition Guard](https://github.com/sysretq0/android-partition-guard).
