@@ -1,0 +1,31 @@
+# ModuleGate SELinux policy snippet.
+#
+# The kernel exposes /sys/kernel/module_gate/ labeled sysfs by default,
+# so confined domains (including root under most vendor policies) get
+# DAC-permitted but SELinux-denied on mode/add/remove. Apply via your
+# root solution's live-policy mechanism (e.g. KernelSU Manager: bundled
+# as a sepolicy.rule in a companion module, or magiskpolicy --live):
+#
+#   magiskpolicy --live \
+#     "type sysfs_module_gate, fs_type, sysfs_type" \
+#     "allow init sysfs_module_gate:dir search" \
+#     "allow init sysfs_module_gate:file rw_file_perms" \
+#     "allow shell sysfs_module_gate:dir search" \
+#     "allow shell sysfs_module_gate:file r_file_perms" \
+#     "allow su sysfs_module_gate:dir search" \
+#     "allow su sysfs_module_gate:file rw_file_perms" \
+#     "genfscon sysfs /kernel/module_gate gen_context(system_u:object_r:sysfs_module_gate,s0)"
+#
+# Scope notes: init needs rw only if you drive enforcement from init.rc
+# (post-fs-data trigger); otherwise shell/su management is enough and
+# init gets nothing. Never grant untrusted_app: the whole point is that
+# apps cannot enroll their own modules.
+
+type sysfs_module_gate, fs_type, sysfs_type;
+allow init sysfs_module_gate:dir search;
+allow init sysfs_module_gate:file rw_file_perms;
+allow shell sysfs_module_gate:dir search;
+allow shell sysfs_module_gate:file r_file_perms;
+allow su sysfs_module_gate:dir search;
+allow su sysfs_module_gate:file rw_file_perms;
+genfscon sysfs /kernel/module_gate gen_context(system_u:object_r:sysfs_module_gate,s0)

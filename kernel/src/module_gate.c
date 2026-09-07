@@ -123,8 +123,17 @@ static int mg_post_load_data(char *buf, loff_t size,
 		return 0;
 	if (!buf || size <= 0)
 		return 0;
-	if (mg_hash(buf, size, hash))
-		return 0; /* hashing failed: fail open, like audit */
+	if (mg_hash(buf, size, hash)) {
+		/* Hashing failed (allocation pressure): fail closed under
+		 * enforce mode once userspace runs -- an allocation failure
+		 * must not be a free pass. Audit/boot phases stay fail-open. */
+		if (mg_mode == 1 && system_state >= SYSTEM_RUNNING) {
+			atomic_inc(&mg_denied);
+		pr_info("module-gate: denied module (hash unavailable)\n");
+			return -EPERM;
+		}
+		return 0;
+	}
 
 	mutex_lock(&mg_lock);
 	known = mg_known(hash);
@@ -184,14 +193,21 @@ static ssize_t mode_store(struct kobject *k, struct kobj_attribute *a,
 static ssize_t enrolled_show(struct kobject *k, struct kobj_attribute *a, char *buf)
 {
 	struct mg_entry *e;
-	ssize_t n = 0;
+	unsigned int shown = 0;
+	ssize_t n;
 
 	mutex_lock(&mg_lock);
+	n = scnprintf(buf, MG_SHOW_CAP, "# %u enrolled\n", mg_count);
 	list_for_each_entry(e, &mg_list, node) {
-		if (n + MG_HEX_LEN + 2 > MG_SHOW_CAP)
+		if (n + MG_HEX_LEN + 2 > MG_SHOW_CAP) {
+			n += scnprintf(buf + n, MG_SHOW_CAP - n,
+				       "# ... %u more (one-page cap)\n",
+				       mg_count - shown);
 			break;
+		}
 		n += scnprintf(buf + n, MG_SHOW_CAP - n, "%*phN\n",
 			       MG_HASH_LEN, e->hash);
+		shown++;
 	}
 	mutex_unlock(&mg_lock);
 	return n;
