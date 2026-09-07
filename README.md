@@ -5,6 +5,13 @@ Tiny LSM: audit + gate kernel module loads. Every `insmod`/`modprobe`/init/autol
 - **Audit mode** (default): unknown hashes auto-enroll (TOFU), allowed, logged
 - **Enforce mode**: unknown hashes denied with `-EPERM`, logged, counted
 - **Boot never enforces** (`system_state < SYSTEM_RUNNING`): a wrong list can't brick boot; audit still records everything
+- **Enforcement is never compiled in.** There is no Kconfig, cmdline, or
+  default that turns enforcement on. The only path is an explicit runtime
+  write to `mode` -- preferably ROM-side, in `init.rc`, so it survives
+  factory resets and needs no app, no manager, no root session:
+  `on post-fs-data` (strict) or `on property:sys.boot_completed=1`
+  (relaxed), plus the sepolicy allow for init below. Until that write
+  lands, the device is in audit: observing, enrolling, allowing
 - One hook, once per load — no hot path, no timers, no polling
 
 Inspired by [Baseband Guard](https://github.com/showdo/BBG) (see Partition Guard for the full story); sibling of [Partition Guard](https://github.com/sysretq0/android-partition-guard).
