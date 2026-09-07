@@ -35,6 +35,10 @@
 #include <linux/scatterlist.h>
 #include <linux/atomic.h>
 #include <linux/sched.h>
+#include <linux/sched/mm.h>
+#include <linux/fs.h>
+#include <linux/dcache.h>
+#include <linux/mm.h>
 #include <linux/cred.h>
 #include <linux/uidgid.h>
 #include <linux/kdev_t.h>
@@ -114,12 +118,29 @@ static int mg_enroll_locked(const u8 hash[MG_HASH_LEN])
 
 static void mg_log(const u8 hash[MG_HASH_LEN], const char *what)
 {
-	/* Who loaded it (comm/pid/uid) matters more than a name for broken
-	 * modules: the filename is spoofable and ELF-parsing it here would
-	 * be new attack surface in the LSM. current->comm is kernel-owned. */
-	pr_info("module-gate: %s module sha256:%*phN comm=%s pid=%d uid=%u\n",
-		what, MG_HASH_LEN, hash, current->comm, task_pid_nr(current),
-		from_kuid_munged(current_user_ns(), current_uid()));
+	/* Who loaded it: exe path + comm/pid/uid, all kernel-owned. The
+	 * module filename is spoofable and ELF-parsing it here would be new
+	 * attack surface in the LSM, so loader identity (not module name)
+	 * is what gets logged. comm alone is prctl-spoofable; the exe path
+	 * is not. */
+	{
+		struct file *exe;
+		char *page = (char *)__get_free_page(GFP_KERNEL);
+		char *path = NULL;
+
+		exe = get_mm_exe_file(current->mm);
+		if (exe && page)
+			path = d_path(&exe->f_path, page, PAGE_SIZE);
+		pr_info("module-gate: %s module sha256:%*phN exe=%s comm=%s pid=%d uid=%u\n",
+			what, MG_HASH_LEN, hash,
+			IS_ERR_OR_NULL(path) ? "?" : path,
+			current->comm, task_pid_nr(current),
+			from_kuid_munged(current_user_ns(), current_uid()));
+		if (exe)
+			fput(exe);
+		if (page)
+			free_page((unsigned long)page);
+	}
 }
 
 static int mg_post_load_data(char *buf, loff_t size,
