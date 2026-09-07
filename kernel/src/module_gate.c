@@ -2,10 +2,15 @@
 /*
  * ModuleGate - audit + gate kernel module loads.
  *
- * A tiny LSM hooking kernel_post_load_data() for LOADING_MODULE, the single
- * choke point every insmod/modprobe/init/autoload path converges on
- * (finit_module). The hook receives the full module blob, so decisions are
- * made on the SHA256 of the actual bytes, not on spoofable names.
+ * A tiny LSM hooking both module-load paths: kernel_post_load_data()
+ * for LOADING_MODULE (legacy init_module()) and kernel_post_read_file()
+ * for READING_MODULE (finit_module() -- every real-world load). Either
+ * hook receives the full module blob, so decisions are made on the
+ * SHA256 of the actual bytes, not on spoofable names.
+ *
+ * Threat model: gates non-root / compromised userspace. Root can flip
+ * `mode` to 0 or enroll arbitrary hashes via `add`, by design (audit
+ * default, explicit enable) -- same acceptance as Partition Guard.
  *
  * Modes (sysfs `mode`, default 0):
  *   0 audit   - unknown hashes auto-enroll (TOFU), load allowed, logged.
