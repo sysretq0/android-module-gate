@@ -1,7 +1,11 @@
 config MODULE_GATE
 	bool "ModuleGate: audit and gate kernel module loads"
 	default y
-	depends on SECURITY && CRYPTO_SHA256
+	depends on SECURITY
+	# select, not depends: CRYPTO_SHA256 is unset on stock GKI, and a
+	# bool under an n/m tristate parent would silently unselect us.
+	# The algorithm is dormant until crypto_alloc_shash("sha256") asks.
+	select CRYPTO_SHA256
 	help
 	  Tiny LSM hooking kernel_post_load_data() for LOADING_MODULE --
 	  the single choke point every insmod/modprobe/init/autoload path
