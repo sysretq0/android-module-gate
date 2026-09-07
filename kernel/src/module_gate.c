@@ -156,16 +156,13 @@ static void mg_log(const u8 *hash, const char *what, const char *claimed)
 	}
 }
 
-static int mg_post_load_data(char *buf, loff_t size,
-			     enum kernel_load_data_id id, char *description)
+static int mg_decide(char *buf, loff_t size, const char *claimed)
 {
 	u8 hash[MG_HASH_LEN];
 	bool have_hash, known;
 	const char *what = NULL;
 	int rc = 0;
 
-	if (id != LOADING_MODULE)
-		return 0;
 	if (!buf || size <= 0)
 		return 0;
 	/* Decide under lock, log after unlock: the dcache walk and page
@@ -201,12 +198,34 @@ static int mg_post_load_data(char *buf, loff_t size,
 		mutex_unlock(&mg_lock);
 	}
 	if (what)
-		mg_log(have_hash ? hash : NULL, what, description);
+		mg_log(have_hash ? hash : NULL, what, claimed);
 	return rc;
+}
+
+static int mg_post_load_data(char *buf, loff_t size,
+			     enum kernel_load_data_id id, char *description)
+{
+	if (id != LOADING_MODULE)
+		return 0;
+	return mg_decide(buf, size, description);
+}
+
+/* finit_module(fd) path: kernel_read_file_from_fd() never calls
+ * post_load_data (only legacy init_module() does, via
+ * copy_module_from_user). Without this hook every real-world load
+ * bypasses the gate on all trees (verified 5.10-6.18). Each path
+ * fires exactly one hook, so counts stay exact. */
+static int mg_post_read_file(struct file *file, char *buf, loff_t size,
+			     enum kernel_read_file_id id)
+{
+	if (id != READING_MODULE)
+		return 0;
+	return mg_decide(buf, size, "finit_module");
 }
 
 static struct security_hook_list mg_hooks[] = {
 	LSM_HOOK_INIT(kernel_post_load_data, mg_post_load_data),
+	LSM_HOOK_INIT(kernel_post_read_file, mg_post_read_file),
 };
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
