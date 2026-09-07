@@ -139,7 +139,7 @@ static int mg_post_load_data(char *buf, loff_t size,
 
 	mutex_lock(&mg_lock);
 	known = mg_known(hash);
-	if (!known && (mg_mode == 0 || system_state < SYSTEM_RUNNING)) {
+	if (!known && (READ_ONCE(mg_mode) == 0 || system_state < SYSTEM_RUNNING)) {
 		if (!mg_enroll_locked(hash))
 			mg_log(hash, "enrolled");
 	} else if (!known) {
