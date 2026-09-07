@@ -10,9 +10,10 @@
  * Modes (sysfs `mode`, default 0):
  *   0 audit   - unknown hashes auto-enroll (TOFU), load allowed, logged.
  *   1 enforce - unknown hashes denied with -EPERM, logged, counted.
- * Boot phase (system_state < SYSTEM_RUNNING) never enforces: vendor init
- * loads dozens of modules before userspace exists, and a wrong list must
- * not brick boot. Audit/TOFU still records them, so the list is complete.
+ * Boot phase (system_state < SYSTEM_RUNNING) never reaches the decider:
+ * the read hook fires for early firmware loads, possibly before the
+ * sha256 provider is up. Vendor modules load from first-stage init
+ * (userspace), so nothing real is missed.
  *
  * No hooks on any hot path: fires once per module load (dozens at boot,
  * ~zero after), not per syscall or per open. List lookup under a mutex;
@@ -180,9 +181,9 @@ static int mg_decide(char *buf, loff_t size, const char *claimed)
 	have_hash = !mg_hash(buf, size, hash);
 	if (!have_hash) {
 		/* Hashing failed (allocation pressure): fail closed under
-		 * enforce mode once userspace runs -- an allocation failure
-		 * must not be a free pass. Audit/boot phases stay fail-open. */
-		if (READ_ONCE(mg_mode) == 1 && system_state >= SYSTEM_RUNNING) {
+		 * enforce mode -- an allocation failure must not be a free
+		 * pass. Audit stays fail-open. (Boot never reaches here.) */
+		if (READ_ONCE(mg_mode) == 1) {
 			atomic_inc(&mg_denied);
 			what = "denied";
 			rc = -EPERM;
@@ -192,7 +193,7 @@ static int mg_decide(char *buf, loff_t size, const char *claimed)
 
 		mutex_lock(&mg_lock);
 		known = mg_known(hash);
-		if (!known && (READ_ONCE(mg_mode) == 0 || system_state < SYSTEM_RUNNING)) {
+		if (!known && READ_ONCE(mg_mode) == 0) {
 			erc = mg_enroll_locked(hash);
 			/* A dropped enrollment must be loud: the header's
 			 * completeness claim depends on every load being
