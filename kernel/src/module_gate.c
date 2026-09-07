@@ -41,6 +41,8 @@
 #define MG_HEX_LEN	(MG_HASH_LEN * 2)
 #define MG_MAX_ENROLLED	256
 #define MG_SHOW_CAP	(PAGE_SIZE - 64)
+/* Worst-case bytes of the "# ... N more" trailer; reserved up front. */
+#define MG_TRUNC_RESERVE	64
 
 struct mg_entry {
 	struct list_head node;
@@ -127,9 +129,9 @@ static int mg_post_load_data(char *buf, loff_t size,
 		/* Hashing failed (allocation pressure): fail closed under
 		 * enforce mode once userspace runs -- an allocation failure
 		 * must not be a free pass. Audit/boot phases stay fail-open. */
-		if (mg_mode == 1 && system_state >= SYSTEM_RUNNING) {
+		if (READ_ONCE(mg_mode) == 1 && system_state >= SYSTEM_RUNNING) {
 			atomic_inc(&mg_denied);
-		pr_info("module-gate: denied module (hash unavailable)\n");
+			pr_info("module-gate: denied module (hash unavailable)\n");
 			return -EPERM;
 		}
 		return 0;
@@ -199,7 +201,7 @@ static ssize_t enrolled_show(struct kobject *k, struct kobj_attribute *a, char *
 	mutex_lock(&mg_lock);
 	n = scnprintf(buf, MG_SHOW_CAP, "# %u enrolled\n", mg_count);
 	list_for_each_entry(e, &mg_list, node) {
-		if (n + MG_HEX_LEN + 2 > MG_SHOW_CAP) {
+		if (n + MG_HEX_LEN + 2 + MG_TRUNC_RESERVE > MG_SHOW_CAP) {
 			n += scnprintf(buf + n, MG_SHOW_CAP - n,
 				       "# ... %u more (one-page cap)\n",
 				       mg_count - shown);
