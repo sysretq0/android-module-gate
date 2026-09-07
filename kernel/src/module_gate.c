@@ -116,8 +116,7 @@ static int mg_enroll_locked(const u8 hash[MG_HASH_LEN])
 	return 0;
 }
 
-static void mg_log(const u8 hash[MG_HASH_LEN], const char *what,
-		     const char *claimed)
+static void mg_log(const u8 *hash, const char *what, const char *claimed)
 {
 	/* Who loaded it: exe path + comm/pid/uid, all kernel-owned. The
 	 * module filename is spoofable and ELF-parsing it here would be new
@@ -129,18 +128,28 @@ static void mg_log(const u8 hash[MG_HASH_LEN], const char *what,
 		char *page = (char *)__get_free_page(GFP_KERNEL);
 		char *path = NULL;
 
-		exe = get_mm_exe_file(current->mm);
+		/* current->mm is NULL for kernel threads / exiting tasks and
+		 * get_mm_exe_file() has no NULL guard: check first, or the
+		 * LSM becomes the crash vector. */
+		exe = current->mm ? get_mm_exe_file(current->mm) : NULL;
 		if (exe && page)
 			path = d_path(&exe->f_path, page, PAGE_SIZE);
 		/* init_user_ns, not current_user_ns: the log is global, so the
 		 * uid must be host-meaningful even if the caller sits in a
 		 * userns. `claimed` is the hook's description string, printed
 		 * verbatim and untrusted (grep aid, not identity). */
-		pr_info("module-gate: %s module sha256:%*phN claimed=%s exe=%s comm=%s pid=%d uid=%u\n",
-			what, MG_HASH_LEN, hash, claimed ? claimed : "?",
-			IS_ERR_OR_NULL(path) ? "?" : path,
-			current->comm, task_pid_nr(current),
-			from_kuid(&init_user_ns, current_uid()));
+		if (hash)
+			pr_info("module-gate: %s module sha256:%*phN claimed=%s exe=%s comm=%s pid=%d uid=%u\n",
+				what, MG_HASH_LEN, hash, claimed ? claimed : "?",
+				IS_ERR_OR_NULL(path) ? "?" : path,
+				current->comm, task_pid_nr(current),
+				from_kuid(&init_user_ns, current_uid()));
+		else
+			pr_info("module-gate: %s module (hash unavailable) claimed=%s exe=%s comm=%s pid=%d uid=%u\n",
+				what, claimed ? claimed : "?",
+				IS_ERR_OR_NULL(path) ? "?" : path,
+				current->comm, task_pid_nr(current),
+				from_kuid(&init_user_ns, current_uid()));
 		if (exe)
 			fput(exe);
 		if (page)
@@ -152,36 +161,41 @@ static int mg_post_load_data(char *buf, loff_t size,
 			     enum kernel_load_data_id id, char *description)
 {
 	u8 hash[MG_HASH_LEN];
-	bool known;
+	bool have_hash, known;
+	const char *what = NULL;
 	int rc = 0;
 
 	if (id != LOADING_MODULE)
 		return 0;
 	if (!buf || size <= 0)
 		return 0;
-	if (mg_hash(buf, size, hash)) {
+	/* Decide under lock, log after unlock: the dcache walk and page
+	 * allocation in mg_log() touch nothing the lock protects. */
+	have_hash = !mg_hash(buf, size, hash);
+	mutex_lock(&mg_lock);
+	if (!have_hash) {
 		/* Hashing failed (allocation pressure): fail closed under
 		 * enforce mode once userspace runs -- an allocation failure
 		 * must not be a free pass. Audit/boot phases stay fail-open. */
 		if (READ_ONCE(mg_mode) == 1 && system_state >= SYSTEM_RUNNING) {
 			atomic_inc(&mg_denied);
-			pr_info("module-gate: denied module (hash unavailable)\n");
-			return -EPERM;
+			what = "denied";
+			rc = -EPERM;
 		}
-		return 0;
-	}
-
-	mutex_lock(&mg_lock);
-	known = mg_known(hash);
-	if (!known && (READ_ONCE(mg_mode) == 0 || system_state < SYSTEM_RUNNING)) {
-		if (!mg_enroll_locked(hash))
-			mg_log(hash, "enrolled", description);
-	} else if (!known) {
-		atomic_inc(&mg_denied);
-		mg_log(hash, "denied", description);
-		rc = -EPERM;
+	} else {
+		known = mg_known(hash);
+		if (!known && (READ_ONCE(mg_mode) == 0 || system_state < SYSTEM_RUNNING)) {
+			if (!mg_enroll_locked(hash))
+				what = "enrolled";
+		} else if (!known) {
+			atomic_inc(&mg_denied);
+			what = "denied";
+			rc = -EPERM;
+		}
 	}
 	mutex_unlock(&mg_lock);
+	if (what)
+		mg_log(have_hash ? hash : NULL, what, description);
 	return rc;
 }
 
