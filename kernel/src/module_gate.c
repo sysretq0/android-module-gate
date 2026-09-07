@@ -165,6 +165,14 @@ static int mg_decide(char *buf, loff_t size, const char *claimed)
 
 	if (!buf || size <= 0)
 		return 0;
+	/* Hard gate before SYSTEM_RUNNING: the read hook fires for early
+	 * firmware loads, possibly before the sha256 provider is up -- and
+	 * crypto_alloc_shash() can request_module(), which re-enters this
+	 * hook (recursion to stack death). Vendor modules load from
+	 * first-stage init, i.e. after SYSTEM_RUNNING, so nothing real is
+	 * missed; boot stays crypto-free, log-free, enroll-free. */
+	if (system_state < SYSTEM_RUNNING)
+		return 0;
 	/* Decide under lock, log after unlock: the dcache walk and page
 	 * allocation in mg_log() touch nothing the lock protects. */
 	/* The hash-failure path needs no lock (atomic + READ_ONCE only);
