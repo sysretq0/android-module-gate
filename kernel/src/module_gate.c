@@ -190,15 +190,18 @@ static int mg_decide(char *buf, loff_t size, const char *claimed)
 	 * request_module(), which re-enters this hook on another task --
 	 * holding mg_lock across it would deadlock (the child waits for
 	 * our lock while we wait for the child). Steady state never
-	 * allocs, so the hook can neither recurse nor stall boot loads. */
-	tfm = READ_ONCE(mg_tfm);
+	 * allocs, so the hook can neither recurse nor stall boot loads.
+	 * Publish is release/acquire, not plain: a second CPU must see
+	 * the built crypto_shash object before it sees the pointer.
+	 * (mg_nohash has no pointee, so READ/WRITE_ONCE is enough.) */
+	tfm = smp_load_acquire(&mg_tfm);
 	if (!tfm && !READ_ONCE(mg_nohash)) {
 		struct crypto_shash *nt = crypto_alloc_shash("sha256", 0, 0);
 
 		mutex_lock(&mg_lock);
 		if (!mg_tfm && !mg_nohash) {
 			if (!IS_ERR(nt)) {
-				WRITE_ONCE(mg_tfm, nt);
+				smp_store_release(&mg_tfm, nt);
 				nt = NULL;
 			} else {
 				pr_info("module-gate: sha256 unavailable (%ld), continuing without hashes\n",
@@ -206,7 +209,7 @@ static int mg_decide(char *buf, loff_t size, const char *claimed)
 				WRITE_ONCE(mg_nohash, true);
 			}
 		}
-		tfm = mg_tfm;
+		tfm = smp_load_acquire(&mg_tfm);
 		mutex_unlock(&mg_lock);
 		if (nt && !IS_ERR(nt))
 			crypto_free_shash(nt);
