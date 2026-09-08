@@ -20,6 +20,14 @@
  * sha256 provider is up. Vendor modules load from first-stage init
  * (userspace), so nothing real is missed.
  *
+ * Hot-path discipline (the finit hook fires for every vendor module
+ * during first-stage init): the sha256 tfm is resolved once and cached,
+ * so steady state never calls crypto_alloc_shash() -- which can
+ * request_module(), re-entering this hook. Successful enrollments log
+ * at pr_debug, keeping the serial console from flooding; the sysfs
+ * `enrolled` list -- not dmesg -- is the complete audit record. Only
+ * exceptions (denied, enroll-failed) are loud.
+ *
  * No hooks on any hot path: fires once per module load (dozens at boot,
  * ~zero after), not per syscall or per open. List lookup under a mutex;
  * sysfs show capped like its sibling Partition Guard.
@@ -66,28 +74,26 @@ static unsigned int mg_count;
 static DEFINE_MUTEX(mg_lock);
 static int mg_mode; /* 0 audit, 1 enforce */
 static atomic_t mg_denied = ATOMIC_INIT(0);
+static struct crypto_shash *mg_tfm; /* resolved once, see mg_decide */
+static bool mg_nohash; /* provider missing: audit allows, enforce denies */
 static struct kobject *mg_kobj;
 
-static int mg_hash(const char *buf, loff_t size, u8 out[MG_HASH_LEN])
+/* Hash with the cached tfm. No alloc/free here: the caller resolved mg_tfm
+ * once, so per-load work is hash + list only. */
+static int mg_hash_tfm(struct crypto_shash *tfm, const char *buf, loff_t size,
+		       u8 out[MG_HASH_LEN])
 {
-	struct crypto_shash *tfm;
 	struct shash_desc *desc;
 	int err, dsize;
 
-	tfm = crypto_alloc_shash("sha256", 0, 0);
-	if (IS_ERR(tfm))
-		return PTR_ERR(tfm);
 	dsize = sizeof(*desc) + crypto_shash_descsize(tfm);
 	desc = kmalloc(dsize, GFP_KERNEL);
-	if (!desc) {
-		crypto_free_shash(tfm);
+	if (!desc)
 		return -ENOMEM;
-	}
 	desc->tfm = tfm;
 	err = crypto_shash_init(desc) ? : crypto_shash_update(desc, buf, size) ? :
 	      crypto_shash_final(desc, out);
 	kfree(desc);
-	crypto_free_shash(tfm);
 	return err;
 }
 
@@ -168,6 +174,7 @@ static int mg_decide(char *buf, loff_t size, const char *claimed)
 	bool have_hash, known;
 	const char *what = NULL;
 	int rc = 0;
+	struct crypto_shash *tfm;
 
 	if (!buf || size <= 0)
 		return 0;
@@ -179,15 +186,38 @@ static int mg_decide(char *buf, loff_t size, const char *claimed)
 	 * missed; boot stays crypto-free, log-free, enroll-free. */
 	if (system_state < SYSTEM_RUNNING)
 		return 0;
+	/* One cached tfm, resolved once, outside the lock: alloc can
+	 * request_module(), which re-enters this hook on another task --
+	 * holding mg_lock across it would deadlock (the child waits for
+	 * our lock while we wait for the child). Steady state never
+	 * allocs, so the hook can neither recurse nor stall boot loads. */
+	tfm = READ_ONCE(mg_tfm);
+	if (!tfm && !READ_ONCE(mg_nohash)) {
+		struct crypto_shash *nt = crypto_alloc_shash("sha256", 0, 0);
+
+		mutex_lock(&mg_lock);
+		if (!mg_tfm && !mg_nohash) {
+			if (!IS_ERR(nt)) {
+				WRITE_ONCE(mg_tfm, nt);
+				nt = NULL;
+			} else {
+				pr_info("module-gate: sha256 unavailable (%ld), continuing without hashes\n",
+					PTR_ERR(nt));
+				WRITE_ONCE(mg_nohash, true);
+			}
+		}
+		tfm = mg_tfm;
+		mutex_unlock(&mg_lock);
+		if (nt && !IS_ERR(nt))
+			crypto_free_shash(nt);
+	}
 	/* Decide under lock, log after unlock: the dcache walk and page
 	 * allocation in mg_log() touch nothing the lock protects. */
-	/* The hash-failure path needs no lock (atomic + READ_ONCE only);
-	 * the list path below does. */
-	have_hash = !mg_hash(buf, size, hash);
+	/* Without a provider there is nothing to decide on: fail closed
+	 * under enforce, fail open in audit (announced once above). The
+	 * provider is selected built-in, so boot never reaches here. */
+	have_hash = tfm && !mg_hash_tfm(tfm, buf, size, hash);
 	if (!have_hash) {
-		/* Hashing failed (allocation pressure): fail closed under
-		 * enforce mode -- an allocation failure must not be a free
-		 * pass. Audit stays fail-open. (Boot never reaches here.) */
 		if (READ_ONCE(mg_mode) == 1) {
 			atomic_inc(&mg_denied);
 			what = "denied";
@@ -195,21 +225,38 @@ static int mg_decide(char *buf, loff_t size, const char *claimed)
 		}
 	} else {
 		int erc;
+		bool ok = false;
 
 		mutex_lock(&mg_lock);
 		known = mg_known(hash);
 		if (!known && READ_ONCE(mg_mode) == 0) {
 			erc = mg_enroll_locked(hash);
-			/* A dropped enrollment must be loud: the header's
-			 * completeness claim depends on every load being
-			 * recorded. The module still loads (rc stays 0). */
-			what = erc ? "enroll-failed" : "enrolled";
+			if (!erc) {
+				ok = true;
+			} else {
+				/* A dropped enrollment must be loud: the
+				 * header's completeness claim depends on
+				 * every load being recorded. The module
+				 * still loads (rc stays 0). */
+				what = "enroll-failed";
+			}
 		} else if (!known) {
 			atomic_inc(&mg_denied);
 			what = "denied";
 			rc = -EPERM;
 		}
 		mutex_unlock(&mg_lock);
+		if (ok) {
+			/* Success is the hot path (every vendor module
+			 * during first-stage init): pr_debug keeps the
+			 * serial console from flooding, with no page
+			 * alloc, no exe resolution, no dcache walk. The
+			 * sysfs `enrolled` list stays the complete
+			 * record. */
+			pr_debug("module-gate: enrolled sha256:%*phN claimed=%s comm=%s pid=%d\n",
+				 MG_HASH_LEN, hash, claimed ? claimed : "?",
+				 current->comm, task_pid_nr(current));
+		}
 	}
 	if (what)
 		mg_log(have_hash ? hash : NULL, what, claimed);
